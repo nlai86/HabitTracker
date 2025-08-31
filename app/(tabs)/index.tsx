@@ -1,19 +1,21 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
+  ActivityIndicator, // Add this import
   Alert,
+  FlatList,
   Modal,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  View
+  View,
 } from 'react-native';
-import { signInAnonymously } from '../../src/config/supabase';
+import DraggableFlatList from 'react-native-draggable-flatlist';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import emojiData from "unicode-emoji-json";
+import { getExistingSession, signInAnonymously } from '../../src/config/supabase';
 import { habitService } from '../../src/services/habitService';
-
-const availableIcons = ['⭐', '💪', '📚', '🏃', '💧', '🧘', '🎯', '✍️', '🌱', '🎵', '🍎', '💤', '📱', '🏠', '💰', '❤️'];
 
 export default function HomeScreen() {
   const [habits, setHabits] = useState([]);
@@ -22,21 +24,48 @@ export default function HomeScreen() {
   const [selectedIcon, setSelectedIcon] = useState('⭐');
   const [loading, setLoading] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [newHabitDescription, setNewHabitDescription] = useState('');
+  const [selectedColor, setSelectedColor] = useState('#4CAF50'); // default green
+  const [emojiSearch, setEmojiSearch] = useState(''); // Add this state near your other state declarations
+  const [isEditing, setIsEditing] = useState(false);
+  const [habitToEdit, setHabitToEdit] = useState(null);
+
+  // When closing the modal, reset the state
+  const closeModal = () => {
+    setNewHabitName('');
+    setNewHabitDescription('');
+    setSelectedIcon('⭐');
+    setSelectedColor('#4CAF50');
+    setModalVisible(false);
+  };
 
   // For habit long-press menu
   const [optionsVisible, setOptionsVisible] = useState(false);
   const [selectedHabit, setSelectedHabit] = useState(null);
 
+  // Add this state for the emoji modal
+  const [emojiPickerVisible, setEmojiPickerVisible] = useState(false);
+  const [reorderModalVisible, setReorderModalVisible] = useState(false);
+  const [reorderedHabits, setReorderedHabits] = useState([]);
+
   // Initialize app - authenticate and load habits
   useEffect(() => {
     const initializeApp = async () => {
       try {
-        await signInAnonymously();
+        // First try to get existing session
+        const session = await getExistingSession();
+        if (!session) {
+          // Only sign in anonymously if no existing session
+          await signInAnonymously();
+        }
         setIsAuthenticated(true);
         await loadHabits();
       } catch (error) {
         console.error('Failed to initialize app:', error);
-        Alert.alert('Error', 'Failed to connect to the server');
+        Alert.alert(
+          'Connection Error',
+          'Unable to connect to the server. Please try again later.'
+        );
       } finally {
         setLoading(false);
       }
@@ -62,15 +91,23 @@ export default function HomeScreen() {
     }
 
     try {
-      const newHabit = await habitService.createHabit(newHabitName.trim(), selectedIcon);
-      setHabits([...habits, newHabit]);
-      setNewHabitName('');
-      setSelectedIcon('⭐');
-      setModalVisible(false);
-    } catch (error) {
-      console.error('Error adding habit:', error);
-      Alert.alert('Error', 'Failed to add habit');
-    }
+        // Pass description and color to createHabit
+        const newHabit = await habitService.createHabit(
+          newHabitName.trim(),
+          selectedIcon,
+          newHabitDescription.trim(),
+          selectedColor
+        );
+        setHabits([...habits, newHabit]);
+        setNewHabitName('');
+        setNewHabitDescription('');
+        setSelectedIcon('⭐');
+        setSelectedColor('#4CAF50');
+        setModalVisible(false);
+      } catch (error) {
+        console.error('Error adding habit:', error);
+        Alert.alert('Error', 'Failed to add habit');
+      }
   };
 
   const toggleHabit = async (habitId, dayKey) => {
@@ -102,6 +139,14 @@ export default function HomeScreen() {
     }
   };
 
+  const isYesterdayCompleted = (habit) => {
+    if (!habit) return false; 
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayKey = `${yesterday.getFullYear()}-${yesterday.getMonth()}-${yesterday.getDate()}`;
+    return habit.completedDays.includes(yesterdayKey);
+  };
+
   // ---------- Long Press Menu Actions ----------
   const handleLongPress = (habit) => {
     setSelectedHabit(habit);
@@ -129,26 +174,67 @@ export default function HomeScreen() {
     }
   };
 
+  // Add after other function declarations
+  const handleEditPress = (habit) => {
+    setIsEditing(true);
+    setHabitToEdit(habit);
+    setNewHabitName(habit.name);
+    setNewHabitDescription(habit.description || '');
+    setSelectedIcon(habit.icon);
+    setSelectedColor(habit.color || '#4CAF50');
+    setModalVisible(true);
+    setOptionsVisible(false);
+  };
+
+  const handleUpdate = async () => {
+    if (!newHabitName.trim()) {
+      Alert.alert('Error', 'Please enter a habit name');
+      return;
+    }
+
+    try {
+      const updatedHabit = await habitService.updateHabit(
+        habitToEdit.id,
+        newHabitName.trim(),
+        selectedIcon,
+        newHabitDescription.trim(),
+        selectedColor
+      );
+
+      setHabits(habits.map(h => 
+        h.id === habitToEdit.id ? updatedHabit : h
+      ));
+
+      setModalVisible(false);
+      setIsEditing(false);
+      setHabitToEdit(null);
+      setNewHabitName('');
+      setNewHabitDescription('');
+      setSelectedIcon('⭐');
+      setSelectedColor('#4CAF50');
+    } catch (error) {
+      console.error('Error updating habit:', error);
+      Alert.alert('Error', 'Failed to update habit');
+    }
+  };
+
   // ---------- Habit Card ----------
-  const HabitGrid = ({ habit }) => {
+const HabitGrid = ({ habit }) => {
     const scrollViewRef = useRef(null);
     const today = new Date();
+    const todayKey = `${today.getFullYear()}-${today.getMonth()}-${today.getDate()}`;
     const currentYear = today.getFullYear();
+    const habitColor = habit.color || '#4CAF50';
+    
+    // Calculate total weeks to show (past weeks + current week)
     const startOfYear = new Date(currentYear, 0, 1);
-    
-    const daysSinceStart = Math.floor((today - startOfYear) / (1000 * 60 * 60 * 24));
-    
-    const daysInYear = new Date(currentYear, 11, 31).getDate() === 31 ? 
-      (new Date(currentYear, 1, 29).getMonth() === 1 ? 366 : 365) : 365;
-    
-    const weeks = Math.ceil(daysInYear / 7);
+    const weeksPassed = Math.ceil((today - startOfYear) / (1000 * 60 * 60 * 24 * 7));
+    const totalWeeks = weeksPassed + 1; // Add one more week for future days
     const daysInWeek = 7;
 
     useEffect(() => {
       if (scrollViewRef.current) {
-        const currentWeek = Math.floor(daysSinceStart / 7);
-        const scrollPosition = Math.max(0, (currentWeek - 4) * 14);
-        scrollViewRef.current.scrollTo({ x: scrollPosition, animated: false });
+        scrollViewRef.current.scrollToEnd({ animated: false });
       }
     }, []);
 
@@ -162,32 +248,36 @@ export default function HomeScreen() {
           <View style={styles.habitHeader}>
             <View style={styles.habitTitleRow}>
               <Text style={styles.habitIcon}>{habit.icon}</Text>
-              <Text style={styles.habitName}>{habit.name}</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.habitName}>{habit.name}</Text>
+                {habit.description ? (
+                  <Text style={styles.habitDescription}>{habit.description}</Text>
+                ) : null}
+              </View>
             </View>
             <TouchableOpacity
               style={[
                 styles.checkmarkButton,
-                (() => {
-                  const todayKey = `${today.getFullYear()}-${today.getMonth()}-${today.getDate()}`;
-                  return habit.completedDays.includes(todayKey) ? styles.checkmarkButtonDone : styles.checkmarkButtonUndone;
-                })()
+                {
+                  backgroundColor: habit.completedDays.includes(todayKey)
+                    ? habitColor
+                    : 'transparent',
+                  borderColor: habit.completedDays.includes(todayKey)
+                    ? habitColor
+                    : '#ccc'
+                }
               ]}
-              onPress={() => {
-                const todayKey = `${today.getFullYear()}-${today.getMonth()}-${today.getDate()}`;
-                toggleHabit(habit.id, todayKey);
-              }}
+              onPress={() => toggleHabit(habit.id, todayKey)}
             >
               <Text style={[
                 styles.checkmarkText,
-                (() => {
-                  const todayKey = `${today.getFullYear()}-${today.getMonth()}-${today.getDate()}`;
-                  return habit.completedDays.includes(todayKey) ? styles.checkmarkTextDone : styles.checkmarkTextUndone;
-                })()
+                {
+                  color: habit.completedDays.includes(todayKey)
+                    ? 'white'
+                    : '#ccc'
+                }
               ]}>
-                {(() => {
-                  const todayKey = `${today.getFullYear()}-${today.getMonth()}-${today.getDate()}`;
-                  return habit.completedDays.includes(todayKey) ? '✓' : '○';
-                })()}
+                {habit.completedDays.includes(todayKey) ? '✓' : '○'}
               </Text>
             </TouchableOpacity>
           </View>
@@ -199,30 +289,25 @@ export default function HomeScreen() {
             style={styles.gridScrollView}
           >
             <View style={styles.grid}>
-              {Array.from({ length: weeks }, (_, weekIndex) => (
+              {Array.from({ length: totalWeeks }, (_, weekIndex) => (
                 <View key={weekIndex} style={styles.weekColumn}>
                   {Array.from({ length: daysInWeek }, (_, dayIndex) => {
-                    const dayOfYear = (weekIndex * 7) + dayIndex;
-                    
-                    if (dayOfYear >= daysInYear) {
-                      return <View key={dayIndex} style={styles.emptyCell} />;
-                    }
-                    
-                    const currentDate = new Date(currentYear, 0, 1);
-                    currentDate.setDate(currentDate.getDate() + dayOfYear);
+                    const currentDate = new Date(today);
+                    const daysToSubtract = (totalWeeks - weekIndex - 1) * 7 + (6 - dayIndex);
+                    currentDate.setDate(currentDate.getDate() - daysToSubtract);
                     
                     const dayKey = `${currentDate.getFullYear()}-${currentDate.getMonth()}-${currentDate.getDate()}`;
                     const isCompleted = habit.completedDays.includes(dayKey);
-                    const isToday = dayOfYear === daysSinceStart;
-                    const isFuture = dayOfYear > daysSinceStart;
+                    const isToday = dayKey === todayKey;
+                    const isFuture = currentDate > today;
                     
                     return (
                       <TouchableOpacity
                         key={dayIndex}
                         style={[
                           styles.dayCell,
-                          isCompleted && !isToday && styles.completedDay,
-                          isCompleted && isToday && styles.todayCompleted,
+                          isCompleted && !isToday && { backgroundColor: habitColor },
+                          isCompleted && isToday && { backgroundColor: habitColor },
                           !isCompleted && isToday && styles.today,
                           isFuture && styles.futureDay
                         ]}
@@ -238,7 +323,7 @@ export default function HomeScreen() {
         </View>
       </TouchableOpacity>
     );
-  };
+};
 
   // Show loading screen
   if (loading) {
@@ -250,16 +335,40 @@ export default function HomeScreen() {
     );
   }
 
+  const getFilteredEmojis = () => {
+    return Object.entries(emojiData)
+      .map(([emoji, info]) => ({ emoji, name: info.name }))
+      .filter(item => 
+        item.name.toLowerCase().includes(emojiSearch.toLowerCase()) ||
+        item.emoji.includes(emojiSearch)
+      )
+      .sort((a, b) => a.name.localeCompare(b.name));
+  };
+
+  const saveReorderedHabits = async () => {
+    try {
+      // Update the habits state with the new order
+      setHabits(reorderedHabits);
+      setReorderModalVisible(false);
+      
+      // Here you would typically update the order in your database
+      // You'll need to add this functionality to your habitService
+    } catch (error) {
+      console.error('Error saving habit order:', error);
+      Alert.alert('Error', 'Failed to save habit order');
+    }
+  };
+
   return (
     <View style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.title}>HabitTracker</Text>
         <TouchableOpacity
-          style={styles.addButton}
+          style={styles.headerAddButton}
           onPress={() => setModalVisible(true)}
         >
-          <Text style={styles.addButtonText}>+</Text>
+          <Text style={styles.headerAddButtonText}>+</Text>
         </TouchableOpacity>
       </View>
 
@@ -283,7 +392,9 @@ export default function HomeScreen() {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Add New Habit</Text>
+            <Text style={styles.modalTitle}>
+              {isEditing ? 'Edit Habit' : 'Add New Habit'}
+            </Text>
             
             <TextInput
               style={styles.input}
@@ -292,39 +403,133 @@ export default function HomeScreen() {
               onChangeText={setNewHabitName}
               autoFocus
             />
-            
-            <Text style={styles.iconSectionTitle}>Choose an Icon</Text>
-            <View style={styles.iconGrid}>
-              {availableIcons.map((icon) => (
+
+            {/* Description input */}
+            <TextInput
+              style={styles.input}
+              placeholder="Enter description (optional)"
+              value={newHabitDescription}
+              onChangeText={setNewHabitDescription}
+              multiline
+            />
+
+            {/* Color picker */}
+            <Text style={styles.iconSectionTitle}>Choose a Color</Text>
+            <View style={styles.colorPickerContainer}>
+              {[
+                // Row 1 (7 colors)
+                '#FF3B30', '#FF2D55', '#FF6B6B', '#FF9500', '#FFCC00', '#9ACD32', '#34C759',
+                // Row 2 (7 colors)
+                '#4CAF50','#5AC8FA', '#007AFF','#64D2FF', '#5856D6', '#AF52DE', '#A280FF', 
+                // Row 3 (7 colors)
+                '#9C27B0','#FF00FF','#000000', '#4A4A4A', '#8E8E93', '#8B4513', '#F5F5DC',  
+              ].map((color, index) => (
                 <TouchableOpacity
-                  key={icon}
+                  key={color}
                   style={[
-                    styles.iconOption,
-                    selectedIcon === icon && styles.selectedIconOption
+                    styles.colorCircle,
+                    { backgroundColor: color },
+                    selectedColor === color && styles.selectedColorCircle,
+                    color === '#F5F5DC' && { borderColor: '#E5E5EA', borderWidth: 1 },
+                    // Add margin-right: auto to first two items of each row to force 7 items per row
+                    (index + 1) % 7 === 0 && { marginRight: 'auto' }
                   ]}
-                  onPress={() => setSelectedIcon(icon)}
-                >
-                  <Text style={styles.iconOptionText}>{icon}</Text>
-                </TouchableOpacity>
+                  onPress={() => setSelectedColor(color)}
+                />
               ))}
             </View>
-            
+
+            {/* Emoji Selection Button */}
+            <Text style={styles.iconSectionTitle}>Selected Emoji</Text>
+            <TouchableOpacity 
+              style={styles.emojiPickerButton}
+              onPress={() => setEmojiPickerVisible(true)}
+            >
+              <Text style={styles.selectedEmojiPreview}>{selectedIcon}</Text>
+              <Text style={styles.emojiPickerButtonText}>Change Emoji</Text>
+            </TouchableOpacity>
+
+            {/* Add this new Modal for Emoji Picker */}
+            <Modal
+              animationType="slide"
+              transparent={true}
+              visible={emojiPickerVisible}
+              onRequestClose={() => setEmojiPickerVisible(false)}
+            >
+              <View style={styles.modalOverlay}>
+                <View style={[styles.modalContent, { height: '80%' }]}>
+                  <View style={styles.emojiPickerHeader}>
+                    <Text style={styles.modalTitle}>Choose an Emoji</Text>
+                    <TouchableOpacity 
+                      style={styles.closeButton}
+                      onPress={() => {
+                        setEmojiPickerVisible(false);
+                        setEmojiSearch(''); // Clear search when closing
+                      }}
+                    >
+                      <Text style={styles.closeButtonText}>Done</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  <TextInput
+                    style={styles.emojiSearchInput}
+                    placeholder="Search emojis..."
+                    value={emojiSearch}
+                    onChangeText={setEmojiSearch}
+                    clearButtonMode="while-editing"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+
+                  <FlatList
+                    data={getFilteredEmojis()}
+                    keyExtractor={(item) => item.emoji}
+                    numColumns={6}
+                    renderItem={({ item }) => (
+                      <TouchableOpacity
+                        style={[
+                          styles.emojiCell,
+                          selectedIcon === item.emoji && styles.selectedEmojiCell
+                        ]}
+                        onPress={() => {
+                          setSelectedIcon(item.emoji);
+                          setEmojiPickerVisible(false);
+                          setEmojiSearch(''); // Clear search when selecting
+                        }}
+                      >
+                        <Text style={styles.emojiText}>{item.emoji}</Text>
+                      </TouchableOpacity>
+                    )}
+                    contentContainerStyle={styles.emojiGrid}
+                    keyboardShouldPersistTaps="handled"
+                  />
+                </View>
+              </View>
+            </Modal>
+
+
             <View style={styles.modalButtons}>
               <TouchableOpacity
                 style={[styles.modalButton, styles.cancelButton]}
                 onPress={() => {
                   setModalVisible(false);
+                  setIsEditing(false);
+                  setHabitToEdit(null);
                   setNewHabitName('');
+                  setNewHabitDescription('');
                   setSelectedIcon('⭐');
+                  setSelectedColor('#4CAF50');
                 }}
               >
                 <Text style={styles.cancelButtonText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.modalButton, styles.addHabitButton]}
-                onPress={addHabit}
+                style={[styles.modalButton, styles.submitButton]}
+                onPress={isEditing ? handleUpdate : addHabit}
               >
-                <Text style={styles.addHabitButtonText}>Add Habit</Text>
+                <Text style={styles.submitButtonText}>
+                  {isEditing ? 'Save Changes' : 'Add Habit'}
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -346,20 +551,25 @@ export default function HomeScreen() {
           <View style={styles.optionsContainer}>
             <Text style={styles.optionsTitle}>{selectedHabit?.name}</Text>
 
-            <TouchableOpacity style={styles.optionButton} onPress={completeYesterday}>
-              <Text style={styles.optionText}>✅ Complete Yesterday</Text>
-            </TouchableOpacity>
+          <TouchableOpacity style={styles.optionButton} onPress={completeYesterday}>
+            <Text style={styles.optionText}>
+              {selectedHabit && isYesterdayCompleted(selectedHabit)
+                ? '❌ Uncomplete Yesterday' 
+                : '✅ Complete Yesterday'}
+            </Text>
+          </TouchableOpacity>
 
-            <TouchableOpacity style={styles.optionButton} onPress={() => {
-              setOptionsVisible(false);
-              Alert.alert("Edit Habit", "Implement edit modal here!");
-            }}>
+            <TouchableOpacity 
+              style={styles.optionButton} 
+              onPress={() => handleEditPress(selectedHabit)}
+            >
               <Text style={styles.optionText}>✏️ Edit</Text>
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.optionButton} onPress={() => {
+              setReorderedHabits([...habits]);
+              setReorderModalVisible(true);
               setOptionsVisible(false);
-              Alert.alert("Reorder Habits", "Implement reorder mode here!");
             }}>
               <Text style={styles.optionText}>↕️ Reorder Habits</Text>
             </TouchableOpacity>
@@ -369,6 +579,70 @@ export default function HomeScreen() {
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
+      </Modal>
+
+      {/* Reorder Habits Modal */}
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={reorderModalVisible}
+        onRequestClose={() => setReorderModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { height: '80%', paddingTop: 16 }]}>
+            <View style={styles.reorderHeader}>
+              <Text style={styles.modalTitle}>Reorder Habits</Text>
+              <View style={styles.reorderButtons}>
+                <TouchableOpacity
+                  style={styles.reorderButton}
+                  onPress={() => setReorderModalVisible(false)}
+                >
+                  <Text style={styles.reorderButtonText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.reorderButton, { marginLeft: 20 }]}
+                  onPress={saveReorderedHabits}
+                >
+                  <Text style={[styles.reorderButtonText, { color: '#007AFF' }]}>
+                    Save
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <GestureHandlerRootView style={{ flex: 1 }}>
+              <DraggableFlatList
+                data={reorderedHabits}
+                onDragEnd={({ data }) => setReorderedHabits(data)}
+                keyExtractor={item => item.id}
+                renderItem={({ item, drag, isActive }) => (
+                  <TouchableOpacity
+                    style={[
+                      styles.reorderItem,
+                      isActive && styles.reorderItemActive
+                    ]}
+                    onLongPress={drag}
+                    delayLongPress={0}
+                  >
+                    <View style={styles.reorderItemContent}>
+                      <Text style={styles.reorderItemEmoji}>{item.icon}</Text>
+                      <View style={styles.reorderItemTextContainer}>
+                        <Text style={styles.reorderItemName}>{item.name}</Text>
+                        {item.description ? (
+                          <Text style={styles.reorderItemDescription} numberOfLines={1}>
+                            {item.description}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <Text style={styles.dragHandle}>⋮⋮</Text>
+                    </View>
+                  </TouchableOpacity>
+                )}
+                containerStyle={{ paddingHorizontal: 4 }}
+              />
+            </GestureHandlerRootView>
+          </View>
+        </View>
       </Modal>
     </View>
   );
@@ -380,16 +654,50 @@ const styles = StyleSheet.create({
   loadingText: { marginTop: 16, fontSize: 16, color: '#666' },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingBottom: 25 },
   title: { fontSize: 32, fontWeight: '700', color: '#1a1a1a', letterSpacing: -0.5 },
-  addButton: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#007AFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#007AFF', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8, elevation: 6 },
-  addButtonText: { color: 'white', fontSize: 26, fontWeight: '300', lineHeight: 26 },
+  headerAddButton: {  // New style
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#007AFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#007AFF',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6
+  },
+  headerAddButtonText: {  // New style
+    color: 'white',
+    fontSize: 26,
+    fontWeight: '300',
+    lineHeight: 26
+  },
   habitsContainer: { flex: 1, paddingHorizontal: 16 },
   emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 16 },
   emptyText: { textAlign: 'center', fontSize: 18, color: '#666', fontWeight: '500' },
   habitContainer: { backgroundColor: 'white', borderRadius: 16, padding: 20, marginBottom: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.08, shadowRadius: 12, elevation: 4 },
   habitHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
-  habitTitleRow: { flexDirection: 'row', alignItems: 'center', flex: 1 },
-  habitIcon: { fontSize: 24, marginRight: 12 },
-  habitName: { fontSize: 20, fontWeight: '600', color: '#1a1a1a', flex: 1 },
+  habitTitleRow: { 
+    flexDirection: 'row', 
+    alignItems: 'flex-start', // Change from 'center' to 'flex-start'
+    flex: 1 
+  },
+  habitTextContainer: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  habitIcon: { 
+    fontSize: 24, 
+    marginRight: 12,
+    marginTop: 2, // Align icon with text
+  },
+  habitName: { 
+    fontSize: 20, 
+    fontWeight: '600', 
+    color: '#1a1a1a',
+    marginBottom: 4, // Add spacing between name and description
+  },
   checkmarkButton: { width: 32, height: 32, borderRadius: 16, justifyContent: 'center', alignItems: 'center', borderWidth: 2 },
   checkmarkButtonUndone: { backgroundColor: 'transparent', borderColor: '#ccc' },
   checkmarkButtonDone: { backgroundColor: '#4CAF50', borderColor: '#4CAF50' },
@@ -406,7 +714,14 @@ const styles = StyleSheet.create({
   todayCompleted: { backgroundColor: '#007AFF' },
   futureDay: { backgroundColor: '#f0f0f0', opacity: 0.5 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
-  modalContent: { backgroundColor: 'white', borderRadius: 20, padding: 20, width: '85%', maxWidth: 340, maxHeight: '60%' },
+  modalContent: { 
+    backgroundColor: 'white', 
+    borderRadius: 20, 
+    padding: 20,
+    width: '85%', 
+    maxWidth: 340,
+    maxHeight: '80%' // Increased from 60% to give more room
+  },
   modalTitle: { fontSize: 22, fontWeight: '700', marginBottom: 16, textAlign: 'center', color: '#1a1a1a' },
   input: { borderWidth: 1, borderColor: '#e0e0e0', borderRadius: 12, paddingHorizontal: 16, paddingVertical: 12, fontSize: 16, marginBottom: 20, backgroundColor: '#f8f8f8' },
   iconSectionTitle: { fontSize: 16, fontWeight: '600', marginBottom: 12, color: '#1a1a1a' },
@@ -414,21 +729,248 @@ const styles = StyleSheet.create({
   iconOption: { width: 48, height: 48, borderRadius: 12, backgroundColor: '#f0f0f0', justifyContent: 'center', alignItems: 'center', marginBottom: 8, borderWidth: 2, borderColor: 'transparent' },
   selectedIconOption: { backgroundColor: '#e3f2fd', borderColor: '#007AFF' },
   iconOptionText: { fontSize: 20 },
-  modalButtons: { flexDirection: 'row', justifyContent: 'space-between' },
-  modalButton: { flex: 1, paddingVertical: 14, borderRadius: 12, alignItems: 'center', marginHorizontal: 6 },
-  cancelButton: { backgroundColor: '#f0f0f0' },
-  cancelButtonText: { color: '#666', fontWeight: '600', fontSize: 16 },
-  addHabitButton: { backgroundColor: '#007AFF' },
-  addHabitButtonText: { color: 'white', fontWeight: '600', fontSize: 16 },
-
-  // Long-press options modal
-  optionsOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  optionsContainer: { backgroundColor: 'white', padding: 20, borderTopLeftRadius: 20, borderTopRightRadius: 20 },
-  optionsTitle: { fontSize: 18, fontWeight: '700', marginBottom: 16 },
-  optionButton: { paddingVertical: 14 },
-  optionText: { fontSize: 16 },
-  deleteButton: { marginTop: 10 },
-  deleteText: { color: 'red', fontWeight: '600' },
-  cancelText: { fontSize: 16, fontWeight: '600', color: '#333' },
-});
-
+  modalButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 16, // Reduced from 24
+    marginHorizontal: 0, // Remove negative margin
+    marginBottom: 8 // Add bottom margin
+  },
+  modalButton: {
+    flex: 1,
+    paddingVertical: 14, // Slightly reduced padding
+    borderRadius: 12,
+    alignItems: 'center',
+    marginHorizontal: 4, // Reduced horizontal margin
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  cancelButton: {
+    backgroundColor: '#f5f5f5',
+  },
+  cancelButtonText: {
+    color: '#666',
+    fontWeight: '600',
+    fontSize: 16,
+  },
+  submitButton: {
+    backgroundColor: '#007AFF',
+  },
+  submitButtonText: {
+    color: 'white',
+    fontWeight: '600',
+    fontSize: 16,
+  },
+  emojiGrid: {
+  paddingVertical: 10,
+},
+emojiCell: {
+  flex: 1,
+  margin: 6,
+  justifyContent: "center",
+  alignItems: "center",
+  height: 48,
+  borderRadius: 12,
+  backgroundColor: "#f0f0f0",
+},
+selectedEmojiCell: {
+  backgroundColor: "#e3f2fd",
+  borderColor: "#007AFF",
+  borderWidth: 2,
+},
+emojiText: {
+  fontSize: 28,
+},
+colorPickerContainer: {
+  flexDirection: 'row',
+  flexWrap: 'wrap',
+  justifyContent: 'space-between',
+  marginBottom: 16,
+  width: '100%',
+  gap: 8, // Consistent gap between all circles
+},
+colorCircle: {
+  width: 32,
+  height: 32,
+  borderRadius: 16,
+  borderWidth: 1.5,
+  borderColor: 'transparent',
+},
+selectedColorCircle: {
+  borderColor: '#333',
+  borderWidth: 2,
+},
+habitDescription: {
+  fontSize: 13,
+  color: '#888',
+  flexWrap: 'wrap',
+},
+emojiPickerButton: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  backgroundColor: '#f8f8f8',
+  padding: 12,
+  borderRadius: 12,
+  marginBottom: 16, // Reduced from 20
+  borderWidth: 1,
+  borderColor: '#e0e0e0',
+},
+selectedEmojiPreview: {
+  fontSize: 24,
+  marginRight: 12,
+},
+emojiPickerButtonText: {
+  fontSize: 16,
+  color: '#007AFF',
+  fontWeight: '500',
+},
+emojiPickerHeader: {
+  flexDirection: 'row',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  marginBottom: 20,
+  paddingHorizontal: 4,
+},
+closeButton: {
+  padding: 8,
+},
+closeButtonText: {
+  color: '#007AFF',
+  fontSize: 16,
+  fontWeight: '600',
+},
+emojiSearchInput: {
+  borderWidth: 1,
+  borderColor: '#e0e0e0',
+  borderRadius: 12,
+  paddingHorizontal: 16,
+  paddingVertical: 12,
+  fontSize: 16,
+  marginBottom: 16,
+  backgroundColor: '#f8f8f8',
+},
+optionsOverlay: {
+  flex: 1,
+  backgroundColor: 'rgba(0,0,0,0.5)',
+  justifyContent: 'center',
+  alignItems: 'center',
+  padding: 20,
+},
+optionsContainer: {
+  backgroundColor: 'white',
+  borderRadius: 16,
+  padding: 20,
+  width: '100%',
+  maxWidth: 340,
+  shadowColor: '#000',
+  shadowOffset: {
+    width: 0,
+    height: 2,
+  },
+  shadowOpacity: 0.25,
+  shadowRadius: 3.84,
+  elevation: 5,
+},
+optionsTitle: {
+  fontSize: 20,
+  fontWeight: '600',
+  marginBottom: 16,
+  textAlign: 'center',
+  color: '#1a1a1a'
+},
+optionButton: {
+  paddingVertical: 12,
+  paddingHorizontal: 16,
+  borderRadius: 12,
+  marginBottom: 8,
+  backgroundColor: '#f8f8f8'
+},
+optionText: {
+  fontSize: 16,
+  color: '#1a1a1a'
+},
+deleteButton: {
+  backgroundColor: '#FEE2E2',
+  marginTop: 4
+},
+deleteText: {
+  color: '#DC2626'
+},
+reorderHeader: {
+  flexDirection: 'row',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  paddingBottom: 16,
+  marginBottom: 16,
+  borderBottomWidth: 1,
+  borderBottomColor: '#e0e0e0',
+},
+reorderButtons: {
+  flexDirection: 'row',
+  alignItems: 'center',
+},
+reorderButton: {
+  paddingVertical: 8,
+  paddingHorizontal: 12,
+},
+reorderButtonText: {
+  fontSize: 16,
+  fontWeight: '600',
+  color: '#666',
+},
+reorderItem: {
+  backgroundColor: 'white',
+  paddingVertical: 16,
+  paddingHorizontal: 16,
+  marginBottom: 12,
+  borderRadius: 12,
+  borderWidth: 1,
+  borderColor: '#e0e0e0',
+},
+reorderItemActive: {
+  backgroundColor: '#f8f8f8',
+  transform: [{ scale: 1.02 }],
+  shadowColor: '#000',
+  shadowOffset: {
+    width: 0,
+    height: 4,
+  },
+  shadowOpacity: 0.2,
+  shadowRadius: 4,
+  elevation: 5,
+  borderColor: '#007AFF',
+},
+reorderItemContent: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  gap: 12,
+},
+reorderItemEmoji: {
+  fontSize: 24,
+},
+reorderItemTextContainer: {
+  flex: 1,
+  marginRight: 8,
+},
+reorderItemName: {
+  fontSize: 16,
+  fontWeight: '600',
+  color: '#1a1a1a',
+  marginBottom: 2,
+},
+reorderItemDescription: {
+  fontSize: 13,
+  color: '#666',
+},
+dragHandle: {
+  fontSize: 24,
+  color: '#999',
+  fontWeight: '600',
+}
+}); // End of StyleSheet.create

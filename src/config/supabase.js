@@ -21,14 +21,29 @@ export const getCurrentUser = async () => {
   return user;
 };
 
-// Simple anonymous sign in (no registration needed)
-export const signInAnonymously = async () => {
-  try {
-    const { data, error } = await supabase.auth.signInAnonymously();
-    if (error) throw error;
-    return data;
-  } catch (error) {
-    console.error('Anonymous sign in error:', error);
-    throw error;
+// Also add persistent session handling
+export const getExistingSession = async () => {
+  const { data: { session }, error } = await supabase.auth.getSession();
+  if (error) throw error;
+  return session;
+};
+
+export const signInAnonymously = async (retries = 3, initialDelay = 1000) => {
+  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+  for (let i = 0; i < retries; i++) {
+    try {
+      const { data: { user }, error } = await supabase.auth.signInAnonymously();
+      if (error) throw error;
+      return user;
+    } catch (error) {
+      if (error.message.includes('rate limit') && i < retries - 1) {
+        const delay = initialDelay * Math.pow(2, i);
+        console.log(`Rate limit hit, retrying in ${delay}ms...`);
+        await sleep(delay);
+        continue;
+      }
+      throw error;
+    }
   }
 };
